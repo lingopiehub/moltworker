@@ -390,17 +390,43 @@ async function scheduled(
   env: MoltbotEnv,
   _ctx: ExecutionContext
 ): Promise<void> {
+  // Write cron heartbeat via R2 binding (no sandbox session needed)
+  // This helps verify the cron is firing even when the sandbox is unstable
+  try {
+    await env.MOLTBOT_BUCKET.put('.cron-heartbeat', new Date().toISOString());
+  } catch (e) {
+    console.error('[cron] Failed to write heartbeat:', e);
+  }
+
   const options = buildSandboxOptions(env);
   const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-  console.log('[cron] Starting backup sync to R2...');
-  const result = await syncToR2(sandbox, env);
-  
-  if (result.success) {
-    console.log('[cron] Backup sync completed successfully at', result.lastSync);
-  } else {
-    console.error('[cron] Backup sync failed:', result.error, result.details || '');
+  // Retry sync up to 3 times with backoff (container may be restarting after a deploy)
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[cron] Backup sync attempt ${attempt}/${maxRetries}...`);
+    const result = await syncToR2(sandbox, env);
+
+    if (result.success) {
+      console.log('[cron] Backup sync completed successfully at', result.lastSync);
+      return;
+    }
+
+    console.error(`[cron] Backup sync attempt ${attempt} failed:`, result.error, result.details || '');
+
+    // Don't retry if the error is a configuration issue (not transient)
+    if (result.error === 'R2 storage is not configured') {
+      return;
+    }
+
+    if (attempt < maxRetries) {
+      const delay = attempt * 5000; // 5s, 10s backoff
+      console.log(`[cron] Retrying in ${delay / 1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
+
+  console.error('[cron] All sync attempts failed');
 }
 
 export default {

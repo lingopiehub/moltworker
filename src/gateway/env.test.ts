@@ -99,15 +99,21 @@ describe('buildEnvVars', () => {
       DISCORD_DM_POLICY: 'open',
       SLACK_BOT_TOKEN: 'slack-bot',
       SLACK_APP_TOKEN: 'slack-app',
+      GOOGLE_CHAT_SERVICE_ACCOUNT: '{"type":"service_account"}',
+      GOOGLE_CHAT_AUDIENCE: 'https://example.com/googlechat',
+      GOOGLE_CHAT_AUDIENCE_TYPE: 'app-url',
     });
     const result = buildEnvVars(env);
-    
+
     expect(result.TELEGRAM_BOT_TOKEN).toBe('tg-token');
     expect(result.TELEGRAM_DM_POLICY).toBe('pairing');
     expect(result.DISCORD_BOT_TOKEN).toBe('discord-token');
     expect(result.DISCORD_DM_POLICY).toBe('open');
     expect(result.SLACK_BOT_TOKEN).toBe('slack-bot');
     expect(result.SLACK_APP_TOKEN).toBe('slack-app');
+    expect(result.GOOGLE_CHAT_SERVICE_ACCOUNT).toBe('{"type":"service_account"}');
+    expect(result.GOOGLE_CHAT_AUDIENCE).toBe('https://example.com/googlechat');
+    expect(result.GOOGLE_CHAT_AUDIENCE_TYPE).toBe('app-url');
   });
 
   it('maps DEV_MODE to CLAWDBOT_DEV_MODE for container', () => {

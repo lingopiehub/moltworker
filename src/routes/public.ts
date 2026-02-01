@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { MOLTBOT_PORT } from '../config';
-import { findExistingMoltbotProcess } from '../gateway';
+import { findExistingMoltbotProcess, ensureMoltbotGateway, syncToR2, waitForProcess } from '../gateway';
 
 /**
  * Public routes - NO Cloudflare Access authentication required
@@ -61,6 +61,228 @@ publicRoutes.get('/_admin/assets/*', async (c) => {
   const assetPath = url.pathname.replace('/_admin/assets/', '/assets/');
   const assetUrl = new URL(assetPath, url.origin);
   return c.env.ASSETS.fetch(new Request(assetUrl.toString(), c.req.raw));
+});
+
+// GET /googlechat/health - Diagnostic endpoint for Google Chat channel
+// Returns gateway channel health, process logs, and config diagnostics
+publicRoutes.get('/googlechat/health', async (c) => {
+  const sandbox = c.get('sandbox');
+  const diagnostics: Record<string, unknown> = { timestamp: new Date().toISOString() };
+
+  // Check gateway process
+  try {
+    const process = await findExistingMoltbotProcess(sandbox);
+    diagnostics.gateway = process
+      ? { status: process.status, id: process.id }
+      : { status: 'not_running' };
+
+    if (process) {
+      // Get process logs (last portion)
+      try {
+        const logs = await process.getLogs();
+        const stdout = logs.stdout || '';
+        const stderr = logs.stderr || '';
+        // Only include last 2000 chars of each
+        diagnostics.logs = {
+          stdout: stdout.slice(-2000),
+          stderr: stderr.slice(-2000),
+        };
+      } catch { diagnostics.logs = 'failed to retrieve'; }
+
+      // Probe gateway channels health API
+      try {
+        const healthUrl = `http://localhost:${MOLTBOT_PORT}/api/health/channels`;
+        const resp = await sandbox.containerFetch(new Request(healthUrl), MOLTBOT_PORT);
+        if (resp.ok) {
+          diagnostics.channelsHealth = await resp.json();
+        } else {
+          diagnostics.channelsHealth = { status: resp.status, body: await resp.text().catch(() => '') };
+        }
+      } catch (e) { diagnostics.channelsHealth = { error: e instanceof Error ? e.message : 'unknown' }; }
+    }
+  } catch (e) {
+    diagnostics.error = e instanceof Error ? e.message : 'unknown';
+  }
+
+  // Read config to check channel settings (redact secrets)
+  try {
+    const proc = await sandbox.startProcess('cat /root/.clawdbot/clawdbot.json');
+    let attempts = 0;
+    while (proc.status === 'running' && attempts < 10) {
+      await new Promise(r => setTimeout(r, 200));
+      attempts++;
+    }
+    const logs = await proc.getLogs();
+    try {
+      const config = JSON.parse(logs.stdout || '');
+      // Redact secrets
+      if (config.gateway?.auth?.token) config.gateway.auth.token = '(redacted)';
+      if (config.channels?.googlechat?.serviceAccountFile) config.channels.googlechat.serviceAccountFile = '(path set)';
+      if (config.channels?.googlechat?.serviceAccount) config.channels.googlechat.serviceAccount = '(redacted)';
+      if (config.models?.providers?.anthropic?.apiKey) config.models.providers.anthropic.apiKey = '(redacted)';
+      diagnostics.config = {
+        channels: config.channels,
+        model: config.agents?.defaults?.model,
+        models: config.agents?.defaults?.models,
+        providers: config.models?.providers ? Object.fromEntries(
+          Object.entries(config.models.providers).map(([k, v]: [string, any]) => [k, { baseUrl: v.baseUrl, api: v.api, models: v.models?.map((m: any) => m.name || m.id) }])
+        ) : undefined,
+      };
+    } catch { diagnostics.config = { raw: (logs.stdout || '').slice(0, 500) }; }
+  } catch (e) { diagnostics.config = { error: e instanceof Error ? e.message : 'unknown' }; }
+
+  return c.json(diagnostics);
+});
+
+// GET /googlechat/debug-sync - Debug endpoint to check R2 sync status
+publicRoutes.get('/googlechat/debug-sync', async (c) => {
+  const sandbox = c.get('sandbox');
+  const steps: Record<string, unknown> = { timestamp: new Date().toISOString() };
+
+  // Check R2 credentials
+  steps.credentials = {
+    hasR2AccessKey: !!c.env.R2_ACCESS_KEY_ID,
+    hasR2SecretKey: !!c.env.R2_SECRET_ACCESS_KEY,
+    hasCfAccountId: !!c.env.CF_ACCOUNT_ID,
+  };
+
+  // Check gateway via containerFetch (doesn't need sandbox session)
+  try {
+    const healthUrl = `http://localhost:${MOLTBOT_PORT}/api/health`;
+    const resp = await sandbox.containerFetch(new Request(healthUrl), MOLTBOT_PORT);
+    steps.gatewayHealth = { status: resp.status, ok: resp.ok };
+  } catch (e) { steps.gatewayHealth = { error: e instanceof Error ? e.message : 'unknown' }; }
+
+  // Check sandbox session health (startProcess)
+  try {
+    const proc = await sandbox.startProcess('echo "session-ok"');
+    await waitForProcess(proc, 5000);
+    const logs = await proc.getLogs();
+    steps.sessionHealth = { ok: true, stdout: logs.stdout?.trim() };
+  } catch (e) { steps.sessionHealth = { ok: false, error: e instanceof Error ? e.message : 'unknown' }; }
+
+  // Check R2 backup via binding
+  try {
+    const backupObj = await c.env.MOLTBOT_BUCKET.get('backup.tar.gz');
+    if (backupObj) {
+      steps.r2Backup = {
+        found: true,
+        size: backupObj.size,
+        uploaded: backupObj.uploaded?.toISOString(),
+        metadata: backupObj.customMetadata,
+      };
+    } else {
+      steps.r2Backup = { found: false };
+    }
+  } catch (e) { steps.r2Backup = { error: e instanceof Error ? e.message : 'unknown' }; }
+
+  // Check last sync timestamp via R2 binding
+  try {
+    const obj = await c.env.MOLTBOT_BUCKET.get('.last-sync');
+    if (obj) {
+      steps.r2LastSync = { found: true, content: await obj.text() };
+    } else {
+      steps.r2LastSync = { found: false };
+    }
+  } catch (e) { steps.r2LastSync = { error: e instanceof Error ? e.message : 'unknown' }; }
+
+  // Check cron heartbeat (verifies cron is firing, independent of sync success)
+  try {
+    const obj = await c.env.MOLTBOT_BUCKET.get('.cron-heartbeat');
+    if (obj) {
+      steps.cronHeartbeat = { found: true, content: await obj.text() };
+    } else {
+      steps.cronHeartbeat = { found: false };
+    }
+  } catch (e) { steps.cronHeartbeat = { error: e instanceof Error ? e.message : 'unknown' }; }
+
+  // List R2 objects (supports ?prefix= query param, default lists all)
+  try {
+    const prefix = new URL(c.req.url).searchParams.get('prefix') || undefined;
+    const allObjects: { key: string; size: number; uploaded?: string }[] = [];
+    let cursor: string | undefined;
+    do {
+      const list = await c.env.MOLTBOT_BUCKET.list({ limit: 500, prefix, cursor });
+      for (const o of list.objects) {
+        allObjects.push({ key: o.key, size: o.size, uploaded: o.uploaded?.toISOString() });
+      }
+      cursor = list.truncated ? list.cursor : undefined;
+    } while (cursor);
+    steps.r2Objects = allObjects;
+    steps.r2ObjectCount = allObjects.length;
+  } catch (e) { steps.r2Objects = { error: e instanceof Error ? e.message : 'unknown' }; }
+
+  return c.json(steps);
+});
+
+// POST /googlechat/restore-workspace - Prepare R2 for directory-based restore on next container restart
+publicRoutes.post('/googlechat/restore-workspace', async (c) => {
+  const results: Record<string, unknown> = { timestamp: new Date().toISOString() };
+
+  // Delete the bad backup.tar.gz from R2 (it may contain empty workspace)
+  try {
+    await c.env.MOLTBOT_BUCKET.delete('backup.tar.gz');
+    results.deletedBackupTar = true;
+  } catch (e) {
+    results.deletedBackupTar = { error: e instanceof Error ? e.message : 'unknown' };
+  }
+
+  // Write a .last-sync timestamp so the restore logic knows there's a backup to restore
+  // (should_restore_from_r2 requires this file to exist)
+  try {
+    await c.env.MOLTBOT_BUCKET.put('.last-sync', new Date().toISOString());
+    results.wroteLastSync = true;
+  } catch (e) {
+    results.wroteLastSync = { error: e instanceof Error ? e.message : 'unknown' };
+  }
+
+  // Verify the workspace/ directory backup still exists
+  try {
+    const soulMd = await c.env.MOLTBOT_BUCKET.get('workspace/SOUL.md');
+    const memoryDir = await c.env.MOLTBOT_BUCKET.get('workspace/memory/2026-02-01.md');
+    results.directoryBackup = {
+      soulMd: soulMd ? `${soulMd.size} bytes` : 'missing',
+      memoryFile: memoryDir ? `${memoryDir.size} bytes` : 'missing',
+    };
+  } catch (e) {
+    results.directoryBackup = { error: e instanceof Error ? e.message : 'unknown' };
+  }
+
+  results.nextStep = 'Deploy will restart container, which will restore from workspace/ directory backup';
+  return c.json(results);
+});
+
+// POST /googlechat - Google Chat webhook endpoint (public, no CF Access auth)
+// Google Chat sends HTTP POST requests to this webhook when messages arrive.
+// Authentication is handled by OpenClaw using the Google Chat service account credentials.
+publicRoutes.post('/googlechat', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    await ensureMoltbotGateway(sandbox, c.env);
+  } catch (error) {
+    console.error('[WEBHOOK] Failed to start gateway for Google Chat webhook:', error);
+    return c.json({ error: 'Gateway not available' }, 503);
+  }
+
+  const response = await sandbox.containerFetch(c.req.raw, MOLTBOT_PORT);
+
+  // Opportunistic sync: backup to R2 after handling a webhook (fire-and-forget)
+  // This ensures data is persisted whenever the bot is actively used,
+  // even if the cron trigger is disrupted by DO resets after deploys.
+  c.executionCtx.waitUntil(
+    syncToR2(sandbox, c.env)
+      .then(r => r.success
+        ? console.log('[webhook-sync] Backup synced at', r.lastSync)
+        : console.log('[webhook-sync] Sync skipped:', r.error))
+      .catch(e => console.error('[webhook-sync] Error:', e))
+  );
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 });
 
 export { publicRoutes };

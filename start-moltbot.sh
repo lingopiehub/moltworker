@@ -7,6 +7,7 @@
 # 4. Starts the gateway
 
 set -e
+# v2: open DM policy for Google Chat
 
 # Check if clawdbot gateway is already running - bail early if so
 # Note: CLI is still named "clawdbot" until upstream renames it
@@ -31,38 +32,39 @@ mkdir -p "$CONFIG_DIR"
 # ============================================================
 # RESTORE FROM R2 BACKUP
 # ============================================================
-# Check if R2 backup exists by looking for clawdbot.json
-# The BACKUP_DIR may exist but be empty if R2 was just mounted
-# Note: backup structure is $BACKUP_DIR/clawdbot/ and $BACKUP_DIR/skills/
+# Supports two backup formats:
+# 1. Tar-based backup (backup.tar.gz) - created by R2 binding approach
+# 2. Directory-based backup (clawdbot/, skills/, workspace/) - created by rsync approach
+# The BACKUP_DIR is mounted via s3fs at /data/moltbot
 
 # Helper function to check if R2 backup is newer than local
 should_restore_from_r2() {
     local R2_SYNC_FILE="$BACKUP_DIR/.last-sync"
     local LOCAL_SYNC_FILE="$CONFIG_DIR/.last-sync"
-    
+
     # If no R2 sync timestamp, don't restore
     if [ ! -f "$R2_SYNC_FILE" ]; then
         echo "No R2 sync timestamp found, skipping restore"
         return 1
     fi
-    
+
     # If no local sync timestamp, restore from R2
     if [ ! -f "$LOCAL_SYNC_FILE" ]; then
         echo "No local sync timestamp, will restore from R2"
         return 0
     fi
-    
+
     # Compare timestamps
     R2_TIME=$(cat "$R2_SYNC_FILE" 2>/dev/null)
     LOCAL_TIME=$(cat "$LOCAL_SYNC_FILE" 2>/dev/null)
-    
+
     echo "R2 last sync: $R2_TIME"
     echo "Local last sync: $LOCAL_TIME"
-    
+
     # Convert to epoch seconds for comparison
     R2_EPOCH=$(date -d "$R2_TIME" +%s 2>/dev/null || echo "0")
     LOCAL_EPOCH=$(date -d "$LOCAL_TIME" +%s 2>/dev/null || echo "0")
-    
+
     if [ "$R2_EPOCH" -gt "$LOCAL_EPOCH" ]; then
         echo "R2 backup is newer, will restore"
         return 0
@@ -72,36 +74,91 @@ should_restore_from_r2() {
     fi
 }
 
-if [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
+SKILLS_DIR="/root/clawd/skills"
+WORKSPACE_DIR="/root/clawd"
+RESTORED_FROM_TAR=false
+
+# Priority 1: Tar-based backup (from R2 binding approach, most reliable)
+# Archive contains: .clawdbot/, skills/, clawd/MEMORY.md, clawd/SOUL.md, etc.
+if [ -f "$BACKUP_DIR/backup.tar.gz" ]; then
     if should_restore_from_r2; then
-        echo "Restoring from R2 backup at $BACKUP_DIR/clawdbot..."
-        cp -a "$BACKUP_DIR/clawdbot/." "$CONFIG_DIR/"
-        # Copy the sync timestamp to local so we know what version we have
-        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from R2 backup"
+        echo "Restoring from tar backup at $BACKUP_DIR/backup.tar.gz..."
+        TEMP_DIR=$(mktemp -d)
+        if tar xzf "$BACKUP_DIR/backup.tar.gz" -C "$TEMP_DIR" 2>/dev/null; then
+            # Restore config (.clawdbot/ → /root/.clawdbot/)
+            if [ -d "$TEMP_DIR/.clawdbot" ]; then
+                cp -a "$TEMP_DIR/.clawdbot/." "$CONFIG_DIR/"
+                echo "Restored config from tar backup"
+            fi
+            # Restore skills (skills/ → /root/clawd/skills/)
+            if [ -d "$TEMP_DIR/skills" ]; then
+                mkdir -p "$SKILLS_DIR"
+                cp -a "$TEMP_DIR/skills/." "$SKILLS_DIR/"
+                echo "Restored skills from tar backup"
+            fi
+            # Restore workspace files (clawd/ → /root/clawd/)
+            if [ -d "$TEMP_DIR/clawd" ]; then
+                mkdir -p "$WORKSPACE_DIR"
+                cp -a "$TEMP_DIR/clawd/." "$WORKSPACE_DIR/"
+                echo "Restored workspace from tar backup"
+            fi
+            # Copy sync timestamp
+            cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
+            RESTORED_FROM_TAR=true
+        else
+            echo "Failed to extract tar backup, will try directory-based restore"
+        fi
+        rm -rf "$TEMP_DIR"
     fi
-elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
-    # Legacy backup format (flat structure)
-    if should_restore_from_r2; then
-        echo "Restoring from legacy R2 backup at $BACKUP_DIR..."
-        cp -a "$BACKUP_DIR/." "$CONFIG_DIR/"
-        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from legacy R2 backup"
-    fi
-elif [ -d "$BACKUP_DIR" ]; then
-    echo "R2 mounted at $BACKUP_DIR but no backup data found yet"
-else
-    echo "R2 not mounted, starting fresh"
 fi
 
-# Restore skills from R2 backup if available (only if R2 is newer)
-SKILLS_DIR="/root/clawd/skills"
-if [ -d "$BACKUP_DIR/skills" ] && [ "$(ls -A $BACKUP_DIR/skills 2>/dev/null)" ]; then
-    if should_restore_from_r2; then
-        echo "Restoring skills from $BACKUP_DIR/skills..."
-        mkdir -p "$SKILLS_DIR"
-        cp -a "$BACKUP_DIR/skills/." "$SKILLS_DIR/"
-        echo "Restored skills from R2 backup"
+# Safety check: if tar restore produced an empty workspace, fall back to directory restore
+if [ "$RESTORED_FROM_TAR" = "true" ] && [ ! -d "$WORKSPACE_DIR/memory" ] && [ ! -f "$WORKSPACE_DIR/SOUL.md" ]; then
+    echo "WARNING: Tar restore produced empty workspace, falling through to directory backup"
+    RESTORED_FROM_TAR=false
+fi
+
+# Priority 2: Directory-based backup (from rsync approach, fallback)
+if [ "$RESTORED_FROM_TAR" != "true" ]; then
+    if [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
+        if should_restore_from_r2; then
+            echo "Restoring from R2 backup at $BACKUP_DIR/clawdbot..."
+            cp -a "$BACKUP_DIR/clawdbot/." "$CONFIG_DIR/"
+            cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
+            echo "Restored config from R2 backup"
+        fi
+    elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
+        # Legacy backup format (flat structure)
+        if should_restore_from_r2; then
+            echo "Restoring from legacy R2 backup at $BACKUP_DIR..."
+            cp -a "$BACKUP_DIR/." "$CONFIG_DIR/"
+            cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
+            echo "Restored config from legacy R2 backup"
+        fi
+    elif [ -d "$BACKUP_DIR" ]; then
+        echo "R2 mounted at $BACKUP_DIR but no backup data found yet"
+    else
+        echo "R2 not mounted, starting fresh"
+    fi
+
+    # Restore skills from directory backup if available
+    if [ -d "$BACKUP_DIR/skills" ] && [ "$(ls -A $BACKUP_DIR/skills 2>/dev/null)" ]; then
+        if should_restore_from_r2; then
+            echo "Restoring skills from $BACKUP_DIR/skills..."
+            mkdir -p "$SKILLS_DIR"
+            cp -a "$BACKUP_DIR/skills/." "$SKILLS_DIR/"
+            echo "Restored skills from R2 backup"
+        fi
+    fi
+
+    # Restore workspace from directory backup if available
+    if [ -d "$BACKUP_DIR/workspace" ] && [ "$(ls -A $BACKUP_DIR/workspace 2>/dev/null)" ]; then
+        if should_restore_from_r2; then
+            echo "Restoring workspace from $BACKUP_DIR/workspace..."
+            mkdir -p "$WORKSPACE_DIR"
+            rsync -r --exclude='skills' "$BACKUP_DIR/workspace/" "$WORKSPACE_DIR/"
+            echo "Restored workspace from R2 backup"
+        fi
     fi
 fi
 
@@ -208,6 +265,32 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack.enabled = true;
 }
 
+// Google Chat configuration
+if (process.env.GOOGLE_CHAT_SERVICE_ACCOUNT) {
+    config.channels.googlechat = config.channels.googlechat || {};
+    // Write service account JSON to file (OpenClaw expects a file path)
+    const saPath = '/root/.clawdbot/google-chat-sa.json';
+    try {
+        const saJson = JSON.parse(process.env.GOOGLE_CHAT_SERVICE_ACCOUNT);
+        require('fs').writeFileSync(saPath, JSON.stringify(saJson, null, 2));
+        config.channels.googlechat.serviceAccountFile = saPath;
+        console.log('Wrote Google Chat service account to', saPath);
+    } catch (e) {
+        console.error('Failed to parse GOOGLE_CHAT_SERVICE_ACCOUNT as JSON:', e.message);
+    }
+    if (process.env.GOOGLE_CHAT_AUDIENCE) {
+        config.channels.googlechat.audience = process.env.GOOGLE_CHAT_AUDIENCE;
+    }
+    if (process.env.GOOGLE_CHAT_AUDIENCE_TYPE) {
+        config.channels.googlechat.audienceType = process.env.GOOGLE_CHAT_AUDIENCE_TYPE;
+    }
+    config.channels.googlechat.webhookPath = '/googlechat';
+    config.channels.googlechat.dm = config.channels.googlechat.dm || {};
+    config.channels.googlechat.dm.policy = 'open';
+    config.channels.googlechat.dm.allowFrom = ['*'];
+    config.channels.googlechat.enabled = true;
+}
+
 // Base URL override (e.g., for Cloudflare AI Gateway)
 // Usage: Set AI_GATEWAY_BASE_URL or ANTHROPIC_BASE_URL to your endpoint like:
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
@@ -272,9 +355,48 @@ console.log('Config:', JSON.stringify(config, null, 2));
 EOFNODE
 
 # ============================================================
+# IN-CONTAINER BACKUP LOOP
+# ============================================================
+# Backs up config/skills/workspace to R2 via s3fs mount every 5 minutes.
+# This runs inside the container and does NOT depend on the Worker's
+# sandbox session or cron trigger — it writes directly to /data/moltbot.
+if [ -d "$BACKUP_DIR" ]; then
+    (
+        # Disable set -e in backup subshell so s3fs errors don't kill the loop
+        set +e
+        # Initial delay to let the gateway fully start
+        sleep 60
+        while true; do
+            # Only backup if config exists AND workspace has real content
+            # (prevents backing up an empty/fresh workspace that would overwrite good data)
+            if [ -f "$CONFIG_DIR/clawdbot.json" ]; then
+                # Config and skills: use --delete (these are well-defined, safe to mirror)
+                rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' \
+                    "$CONFIG_DIR/" "$BACKUP_DIR/clawdbot/" 2>/dev/null
+                rsync -r --no-times --delete \
+                    "$SKILLS_DIR/" "$BACKUP_DIR/skills/" 2>/dev/null
+                # Workspace: NO --delete (an incomplete restore must not wipe R2 backup data)
+                rsync -r --no-times --exclude='node_modules' --exclude='.git' --exclude='skills' \
+                    "$WORKSPACE_DIR/" "$BACKUP_DIR/workspace/" 2>/dev/null
+
+                date -Iseconds > "$BACKUP_DIR/.last-sync" 2>/dev/null
+                echo "[container-backup] Synced at $(date -Iseconds)"
+            elif [ -f "$CONFIG_DIR/clawdbot.json" ]; then
+                echo "[container-backup] Skipping: workspace has no memory/SOUL.md (might be fresh/empty)"
+            else
+                echo "[container-backup] Skipping: no config file yet"
+            fi
+            sleep 300
+        done
+    ) &
+    echo "Started in-container backup loop (PID $!)"
+else
+    echo "No backup dir mounted, skipping in-container backup loop"
+fi
+
+# ============================================================
 # START GATEWAY
 # ============================================================
-# Note: R2 backup sync is handled by the Worker's cron trigger
 echo "Starting Moltbot Gateway..."
 echo "Gateway will be available on port 18789"
 
