@@ -1,10 +1,13 @@
 #!/bin/bash
 # Startup script for Moltbot in Cloudflare Sandbox
 # This script:
-# 1. Sets up symlinks from working directories to R2 mount
-# 2. Seeds R2 with defaults on first run
-# 3. Configures moltbot from environment variables
+# 1. Restores data from R2 mount to local disk (fast)
+# 2. Configures moltbot from environment variables
+# 3. Starts a background sync loop (local → R2, every 60s)
 # 4. Starts the gateway
+#
+# Architecture: gateway runs on LOCAL disk (fast), background loop
+# pushes changes to R2 mount (persistence). No symlinks to s3fs.
 
 set -e
 
@@ -26,56 +29,42 @@ SKILLS_DIR="/root/clawd/skills"
 echo "R2 mount: $R2_DIR"
 
 # ============================================================
-# SET UP R2 PERSISTENCE VIA SYMLINKS
+# RESTORE FROM R2 TO LOCAL DISK
 # ============================================================
-# R2 is mounted at /r2 by the Worker before starting this script.
-# We symlink the working directories to R2 so all writes persist.
-#
-# Mapping:
-#   /root/.clawdbot  ->  /r2/clawdbot    (config, sessions, credentials)
-#   /root/clawd      ->  /r2/workspace   (workspace: memory, skills, markdown files)
+# R2 is mounted at /r2 via s3fs. We copy data from R2 to local disk
+# so the gateway runs at full speed. A background loop syncs back.
 
 if mountpoint -q "$R2_DIR" 2>/dev/null; then
-    echo "R2 is mounted at $R2_DIR, setting up persistence..."
+    echo "R2 is mounted at $R2_DIR, restoring to local disk..."
 
-    # --- Config directory ---
+    # --- Restore config ---
     if [ -d "$R2_DIR/clawdbot" ] && [ "$(ls -A $R2_DIR/clawdbot 2>/dev/null)" ]; then
-        echo "Found existing config in R2, symlinking..."
+        echo "Restoring config from R2..."
+        mkdir -p "$CONFIG_DIR"
+        cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
+        echo "Config restored from R2"
     else
-        echo "No config in R2 (first run), seeding from Docker image..."
-        mkdir -p "$R2_DIR/clawdbot"
-        # Copy any existing config from the Docker image
-        if [ -d "$CONFIG_DIR" ] && [ "$(ls -A $CONFIG_DIR 2>/dev/null)" ]; then
-            cp -a "$CONFIG_DIR/." "$R2_DIR/clawdbot/" 2>/dev/null || true
-        fi
+        echo "No config in R2 (first run)"
     fi
-    # Replace local config dir with symlink to R2
-    rm -rf "$CONFIG_DIR"
-    ln -sf "$R2_DIR/clawdbot" "$CONFIG_DIR"
-    echo "Config: $CONFIG_DIR -> $R2_DIR/clawdbot"
 
-    # --- Workspace directory ---
+    # --- Restore workspace ---
     if [ -d "$R2_DIR/workspace" ] && [ "$(ls -A $R2_DIR/workspace 2>/dev/null)" ]; then
-        echo "Found existing workspace in R2, symlinking..."
+        echo "Restoring workspace from R2..."
+        mkdir -p "$WORKSPACE_DIR"
+        # Exclude node_modules - too slow to copy from s3fs, use Docker image version
+        rsync -a --exclude='node_modules' "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
+            cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
+        echo "Workspace restored from R2"
     else
-        echo "No workspace in R2 (first run), seeding from Docker image..."
-        mkdir -p "$R2_DIR/workspace"
-        # Copy workspace files from Docker image (skills, etc.)
-        if [ -d "$WORKSPACE_DIR" ] && [ "$(ls -A $WORKSPACE_DIR 2>/dev/null)" ]; then
-            cp -a "$WORKSPACE_DIR/." "$R2_DIR/workspace/" 2>/dev/null || true
-        fi
+        echo "No workspace in R2 (first run)"
     fi
-    # Replace local workspace dir with symlink to R2
-    rm -rf "$WORKSPACE_DIR"
-    ln -sf "$R2_DIR/workspace" "$WORKSPACE_DIR"
-    echo "Workspace: $WORKSPACE_DIR -> $R2_DIR/workspace"
 
-    echo "R2 persistence configured via symlinks"
+    echo "Restore complete, gateway will run on local disk"
 else
     echo "WARNING: R2 not mounted at $R2_DIR, running without persistence"
 fi
 
-# Ensure config directory exists (creates on R2 if symlinked, or locally if not)
+# Ensure config directory exists
 mkdir -p "$CONFIG_DIR"
 
 # If config file still doesn't exist, create from template
@@ -269,6 +258,32 @@ fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration updated successfully');
 console.log('Config:', JSON.stringify(config, null, 2));
 EOFNODE
+
+# ============================================================
+# BACKGROUND SYNC: LOCAL DISK → R2
+# ============================================================
+# Pushes changes from local disk to R2 mount every 60 seconds.
+# No --delete: only adds/updates, never removes from R2.
+if mountpoint -q "$R2_DIR" 2>/dev/null; then
+    (
+        set +e
+        sleep 30
+        while true; do
+            if [ -f "$CONFIG_DIR/clawdbot.json" ]; then
+                rsync -a --no-times --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' \
+                    "$CONFIG_DIR/" "$R2_DIR/clawdbot/" 2>/dev/null
+                rsync -a --no-times --exclude='node_modules' --exclude='.git' --exclude='skills' \
+                    "$WORKSPACE_DIR/" "$R2_DIR/workspace/" 2>/dev/null
+                rsync -a --no-times \
+                    "$SKILLS_DIR/" "$R2_DIR/workspace/skills/" 2>/dev/null
+                date -Iseconds > "$R2_DIR/.last-sync" 2>/dev/null
+                echo "[sync] Pushed to R2 at $(date -Iseconds)"
+            fi
+            sleep 60
+        done
+    ) &
+    echo "Started background sync loop (PID $!)"
+fi
 
 # ============================================================
 # START GATEWAY
