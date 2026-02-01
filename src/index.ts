@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
@@ -383,50 +383,19 @@ app.all('*', async (c) => {
 
 /**
  * Scheduled handler for cron triggers.
- * Syncs moltbot config/state from container to R2 for persistence.
+ * With direct R2 mounting, this only writes a heartbeat for monitoring.
  */
 async function scheduled(
   _event: ScheduledEvent,
   env: MoltbotEnv,
   _ctx: ExecutionContext
 ): Promise<void> {
-  // Write cron heartbeat via R2 binding (no sandbox session needed)
-  // This helps verify the cron is firing even when the sandbox is unstable
+  // Write cron heartbeat via R2 binding (monitoring only)
   try {
     await env.MOLTBOT_BUCKET.put('.cron-heartbeat', new Date().toISOString());
   } catch (e) {
     console.error('[cron] Failed to write heartbeat:', e);
   }
-
-  const options = buildSandboxOptions(env);
-  const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
-
-  // Retry sync up to 3 times with backoff (container may be restarting after a deploy)
-  const maxRetries = 3;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`[cron] Backup sync attempt ${attempt}/${maxRetries}...`);
-    const result = await syncToR2(sandbox, env);
-
-    if (result.success) {
-      console.log('[cron] Backup sync completed successfully at', result.lastSync);
-      return;
-    }
-
-    console.error(`[cron] Backup sync attempt ${attempt} failed:`, result.error, result.details || '');
-
-    // Don't retry if the error is a configuration issue (not transient)
-    if (result.error === 'R2 storage is not configured') {
-      return;
-    }
-
-    if (attempt < maxRetries) {
-      const delay = attempt * 5000; // 5s, 10s backoff
-      console.log(`[cron] Retrying in ${delay / 1000}s...`);
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-
-  console.error('[cron] All sync attempts failed');
 }
 
 export default {

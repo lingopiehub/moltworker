@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { MOLTBOT_PORT } from '../config';
-import { findExistingMoltbotProcess, ensureMoltbotGateway, syncToR2, waitForProcess } from '../gateway';
+import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
 /**
  * Public routes - NO Cloudflare Access authentication required
@@ -134,7 +134,7 @@ publicRoutes.get('/googlechat/health', async (c) => {
   return c.json(diagnostics);
 });
 
-// GET /googlechat/debug-sync - Debug endpoint to check R2 sync status
+// GET /googlechat/debug-sync - Debug endpoint to check R2 mount status
 publicRoutes.get('/googlechat/debug-sync', async (c) => {
   const sandbox = c.get('sandbox');
   const steps: Record<string, unknown> = { timestamp: new Date().toISOString() };
@@ -153,40 +153,7 @@ publicRoutes.get('/googlechat/debug-sync', async (c) => {
     steps.gatewayHealth = { status: resp.status, ok: resp.ok };
   } catch (e) { steps.gatewayHealth = { error: e instanceof Error ? e.message : 'unknown' }; }
 
-  // Check sandbox session health (startProcess)
-  try {
-    const proc = await sandbox.startProcess('echo "session-ok"');
-    await waitForProcess(proc, 5000);
-    const logs = await proc.getLogs();
-    steps.sessionHealth = { ok: true, stdout: logs.stdout?.trim() };
-  } catch (e) { steps.sessionHealth = { ok: false, error: e instanceof Error ? e.message : 'unknown' }; }
-
-  // Check R2 backup via binding
-  try {
-    const backupObj = await c.env.MOLTBOT_BUCKET.get('backup.tar.gz');
-    if (backupObj) {
-      steps.r2Backup = {
-        found: true,
-        size: backupObj.size,
-        uploaded: backupObj.uploaded?.toISOString(),
-        metadata: backupObj.customMetadata,
-      };
-    } else {
-      steps.r2Backup = { found: false };
-    }
-  } catch (e) { steps.r2Backup = { error: e instanceof Error ? e.message : 'unknown' }; }
-
-  // Check last sync timestamp via R2 binding
-  try {
-    const obj = await c.env.MOLTBOT_BUCKET.get('.last-sync');
-    if (obj) {
-      steps.r2LastSync = { found: true, content: await obj.text() };
-    } else {
-      steps.r2LastSync = { found: false };
-    }
-  } catch (e) { steps.r2LastSync = { error: e instanceof Error ? e.message : 'unknown' }; }
-
-  // Check cron heartbeat (verifies cron is firing, independent of sync success)
+  // Check cron heartbeat (verifies cron is firing)
   try {
     const obj = await c.env.MOLTBOT_BUCKET.get('.cron-heartbeat');
     if (obj) {
@@ -215,42 +182,6 @@ publicRoutes.get('/googlechat/debug-sync', async (c) => {
   return c.json(steps);
 });
 
-// POST /googlechat/restore-workspace - Prepare R2 for directory-based restore on next container restart
-publicRoutes.post('/googlechat/restore-workspace', async (c) => {
-  const results: Record<string, unknown> = { timestamp: new Date().toISOString() };
-
-  // Delete the bad backup.tar.gz from R2 (it may contain empty workspace)
-  try {
-    await c.env.MOLTBOT_BUCKET.delete('backup.tar.gz');
-    results.deletedBackupTar = true;
-  } catch (e) {
-    results.deletedBackupTar = { error: e instanceof Error ? e.message : 'unknown' };
-  }
-
-  // Write a .last-sync timestamp so the restore logic knows there's a backup to restore
-  // (should_restore_from_r2 requires this file to exist)
-  try {
-    await c.env.MOLTBOT_BUCKET.put('.last-sync', new Date().toISOString());
-    results.wroteLastSync = true;
-  } catch (e) {
-    results.wroteLastSync = { error: e instanceof Error ? e.message : 'unknown' };
-  }
-
-  // Verify the workspace/ directory backup still exists
-  try {
-    const soulMd = await c.env.MOLTBOT_BUCKET.get('workspace/SOUL.md');
-    const memoryDir = await c.env.MOLTBOT_BUCKET.get('workspace/memory/2026-02-01.md');
-    results.directoryBackup = {
-      soulMd: soulMd ? `${soulMd.size} bytes` : 'missing',
-      memoryFile: memoryDir ? `${memoryDir.size} bytes` : 'missing',
-    };
-  } catch (e) {
-    results.directoryBackup = { error: e instanceof Error ? e.message : 'unknown' };
-  }
-
-  results.nextStep = 'Deploy will restart container, which will restore from workspace/ directory backup';
-  return c.json(results);
-});
 
 // POST /googlechat - Google Chat webhook endpoint (public, no CF Access auth)
 // Google Chat sends HTTP POST requests to this webhook when messages arrive.
@@ -266,17 +197,6 @@ publicRoutes.post('/googlechat', async (c) => {
   }
 
   const response = await sandbox.containerFetch(c.req.raw, MOLTBOT_PORT);
-
-  // Opportunistic sync: backup to R2 after handling a webhook (fire-and-forget)
-  // This ensures data is persisted whenever the bot is actively used,
-  // even if the cron trigger is disrupted by DO resets after deploys.
-  c.executionCtx.waitUntil(
-    syncToR2(sandbox, c.env)
-      .then(r => r.success
-        ? console.log('[webhook-sync] Backup synced at', r.lastSync)
-        : console.log('[webhook-sync] Sync skipped:', r.error))
-      .catch(e => console.error('[webhook-sync] Error:', e))
-  );
 
   return new Response(response.body, {
     status: response.status,

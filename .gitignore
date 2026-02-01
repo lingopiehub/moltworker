@@ -36,3 +36,6 @@ Thumbs.db
 
 # Docker build artifacts
 *.tar
+
+# R2 backups
+.r2-backup-*

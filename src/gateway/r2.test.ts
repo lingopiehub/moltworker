@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mountR2Storage } from './r2';
-import { 
-  createMockEnv, 
-  createMockEnvWithR2, 
-  createMockProcess, 
-  createMockSandbox, 
-  suppressConsole 
+import {
+  createMockEnv,
+  createMockEnvWithR2,
+  createMockProcess,
+  createMockSandbox,
+  suppressConsole
 } from '../test-utils';
 
 describe('mountR2Storage', () => {
@@ -65,7 +65,10 @@ describe('mountR2Storage', () => {
 
   describe('mounting behavior', () => {
     it('mounts R2 bucket when credentials provided and not already mounted', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox({ mounted: false });
+      const { sandbox, mountBucketMock, startProcessMock } = createMockSandbox({ mounted: false });
+      // Mock mountpoint check: not mounted
+      startProcessMock.mockResolvedValueOnce(createMockProcess('NOT_MOUNTED'));
+
       const env = createMockEnvWithR2({
         R2_ACCESS_KEY_ID: 'key123',
         R2_SECRET_ACCESS_KEY: 'secret',
@@ -77,7 +80,7 @@ describe('mountR2Storage', () => {
       expect(result).toBe(true);
       expect(mountBucketMock).toHaveBeenCalledWith(
         'moltbot-data',
-        '/data/moltbot',
+        '/r2',
         {
           endpoint: 'https://account123.r2.cloudflarestorage.com',
           credentials: {
@@ -89,7 +92,10 @@ describe('mountR2Storage', () => {
     });
 
     it('returns true immediately when bucket is already mounted', async () => {
-      const { sandbox, mountBucketMock } = createMockSandbox({ mounted: true });
+      const { sandbox, mountBucketMock, startProcessMock } = createMockSandbox({ mounted: true });
+      // Mock mountpoint check: mounted
+      startProcessMock.mockResolvedValueOnce(createMockProcess('MOUNTED'));
+
       const env = createMockEnvWithR2();
 
       const result = await mountR2Storage(sandbox, env);
@@ -98,12 +104,15 @@ describe('mountR2Storage', () => {
       expect(mountBucketMock).not.toHaveBeenCalled();
       expect(console.log).toHaveBeenCalledWith(
         'R2 bucket already mounted at',
-        '/data/moltbot'
+        '/r2'
       );
     });
 
     it('logs success message when mounted successfully', async () => {
-      const { sandbox } = createMockSandbox({ mounted: false });
+      const { sandbox, startProcessMock } = createMockSandbox({ mounted: false });
+      // Mock mountpoint check: not mounted
+      startProcessMock.mockResolvedValueOnce(createMockProcess('NOT_MOUNTED'));
+
       const env = createMockEnvWithR2();
 
       await mountR2Storage(sandbox, env);
@@ -119,9 +128,9 @@ describe('mountR2Storage', () => {
       const { sandbox, mountBucketMock, startProcessMock } = createMockSandbox({ mounted: false });
       mountBucketMock.mockRejectedValue(new Error('Mount failed'));
       startProcessMock
-        .mockResolvedValueOnce(createMockProcess(''))
-        .mockResolvedValueOnce(createMockProcess(''));
-      
+        .mockResolvedValueOnce(createMockProcess('NOT_MOUNTED')) // Initial check
+        .mockResolvedValueOnce(createMockProcess('NOT_MOUNTED')); // Re-check after error
+
       const env = createMockEnvWithR2();
 
       const result = await mountR2Storage(sandbox, env);
@@ -136,11 +145,11 @@ describe('mountR2Storage', () => {
     it('returns true if mount fails but check shows it is actually mounted', async () => {
       const { sandbox, mountBucketMock, startProcessMock } = createMockSandbox();
       startProcessMock
-        .mockResolvedValueOnce(createMockProcess(''))
-        .mockResolvedValueOnce(createMockProcess('s3fs on /data/moltbot type fuse.s3fs\n'));
-      
+        .mockResolvedValueOnce(createMockProcess('NOT_MOUNTED')) // Initial check
+        .mockResolvedValueOnce(createMockProcess('MOUNTED')); // Re-check after error (now mounted)
+
       mountBucketMock.mockRejectedValue(new Error('Transient error'));
-      
+
       const env = createMockEnvWithR2();
 
       const result = await mountR2Storage(sandbox, env);

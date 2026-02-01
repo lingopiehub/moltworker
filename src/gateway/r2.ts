@@ -7,7 +7,7 @@ import { R2_MOUNT_PATH, R2_BUCKET_NAME } from '../config';
  */
 async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
   try {
-    const proc = await sandbox.startProcess(`mount | grep "s3fs on ${R2_MOUNT_PATH}"`);
+    const proc = await sandbox.startProcess(`mountpoint -q ${R2_MOUNT_PATH} && echo "MOUNTED" || echo "NOT_MOUNTED"`);
     // Wait for the command to complete
     let attempts = 0;
     while (proc.status === 'running' && attempts < 10) {
@@ -15,8 +15,9 @@ async function isR2Mounted(sandbox: Sandbox): Promise<boolean> {
       attempts++;
     }
     const logs = await proc.getLogs();
-    // If stdout has content, the mount exists
-    const mounted = !!(logs.stdout && logs.stdout.includes('s3fs'));
+    // If stdout contains "MOUNTED" but not "NOT_MOUNTED", the mount exists
+    const stdout = logs.stdout || '';
+    const mounted = stdout.includes('MOUNTED') && !stdout.includes('NOT_MOUNTED');
     console.log('isR2Mounted check:', mounted, 'stdout:', logs.stdout?.slice(0, 100));
     return mounted;
   } catch (err) {
