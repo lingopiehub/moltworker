@@ -35,10 +35,8 @@ echo "R2 mount: $R2_DIR"
 if mountpoint -q "$R2_DIR" 2>/dev/null; then
     echo "R2 is mounted at $R2_DIR, restoring config to local disk..."
 
-    # --- Restore ONLY essential config files (not full directory) ---
-    # Full directory copy is too slow over s3fs (2000+ objects = minutes).
-    # Only copy the config JSON and service account file — everything the
-    # gateway needs to start. The background sync handles the rest.
+    # --- Restore essential config files synchronously (fast) ---
+    # These 2 files are all the gateway needs to start listening.
     mkdir -p "$CONFIG_DIR"
     if [ -f "$R2_DIR/clawdbot/clawdbot.json" ]; then
         cp "$R2_DIR/clawdbot/clawdbot.json" "$CONFIG_DIR/clawdbot.json" 2>/dev/null || true
@@ -51,8 +49,17 @@ if mountpoint -q "$R2_DIR" 2>/dev/null; then
         echo "Restored google-chat-sa.json from R2"
     fi
 
-    # Skip workspace restore at startup — not needed for gateway to start.
-    # Skills are baked into the Docker image. Background sync persists changes.
+    # --- Restore agents directory in background (slow, but has memory/sessions) ---
+    # This runs concurrently with gateway startup so it doesn't block port readiness.
+    if [ -d "$R2_DIR/clawdbot/agents" ]; then
+        (
+            echo "[restore] Starting background restore of agents directory..."
+            rsync -a "$R2_DIR/clawdbot/agents/" "$CONFIG_DIR/agents/" 2>/dev/null || \
+                cp -a "$R2_DIR/clawdbot/agents/." "$CONFIG_DIR/agents/" 2>/dev/null || true
+            echo "[restore] Agents directory restored from R2"
+        ) &
+        echo "Started background agents restore (PID $!)"
+    fi
 
     echo "Restore complete, gateway will run on local disk"
 else
