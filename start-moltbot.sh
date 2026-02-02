@@ -127,14 +127,6 @@ if (config.models?.providers?.anthropic?.models) {
 
 
 
-// Plugins: load conversation-journal from the workspace plugins dir
-config.plugins = config.plugins || {};
-config.plugins.load = config.plugins.load || {};
-config.plugins.load.paths = config.plugins.load.paths || [];
-if (!config.plugins.load.paths.includes('/root/clawd/plugins/conversation-journal')) {
-    config.plugins.load.paths.push('/root/clawd/plugins/conversation-journal');
-}
-
 // Gateway configuration
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
