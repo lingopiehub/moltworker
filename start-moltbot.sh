@@ -49,17 +49,25 @@ if mountpoint -q "$R2_DIR" 2>/dev/null; then
         echo "Restored google-chat-sa.json from R2"
     fi
 
-    # --- Restore agents directory in background (slow, but has memory/sessions) ---
-    # This runs concurrently with gateway startup so it doesn't block port readiness.
-    if [ -d "$R2_DIR/clawdbot/agents" ]; then
-        (
-            echo "[restore] Starting background restore of agents directory..."
+    # --- Restore everything else in background (slow over s3fs) ---
+    # Agents dir has conversation sessions, workspace has MEMORY.md, IDENTITY.md, etc.
+    # Runs concurrently with gateway startup so it doesn't block port readiness.
+    (
+        echo "[restore] Starting background restore..."
+        if [ -d "$R2_DIR/clawdbot/agents" ]; then
             rsync -a "$R2_DIR/clawdbot/agents/" "$CONFIG_DIR/agents/" 2>/dev/null || \
                 cp -a "$R2_DIR/clawdbot/agents/." "$CONFIG_DIR/agents/" 2>/dev/null || true
-            echo "[restore] Agents directory restored from R2"
-        ) &
-        echo "Started background agents restore (PID $!)"
-    fi
+            echo "[restore] Agents directory restored"
+        fi
+        if [ -d "$R2_DIR/workspace" ]; then
+            rsync -a --exclude='node_modules' --exclude='skills' \
+                "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
+                cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
+            echo "[restore] Workspace restored (MEMORY.md, IDENTITY.md, etc.)"
+        fi
+        echo "[restore] Background restore complete"
+    ) &
+    echo "Started background restore (PID $!)"
 
     echo "Restore complete, gateway will run on local disk"
 else

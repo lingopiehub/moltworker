@@ -183,13 +183,15 @@ publicRoutes.get('/googlechat/debug-sync', async (c) => {
 });
 
 
-// POST /googlechat/restore-agents - Trigger agents directory restore from R2
-// Copies agent memory/sessions from R2 mount to local disk on the running container.
+// POST /googlechat/restore-agents - Trigger full data restore from R2
+// Copies agent sessions + workspace (MEMORY.md, IDENTITY.md, etc.) from R2 to local disk.
 publicRoutes.post('/googlechat/restore-agents', async (c) => {
   const sandbox = c.get('sandbox');
   try {
     const proc = await sandbox.startProcess(
-      'rsync -a /r2/clawdbot/agents/ /root/.clawdbot/agents/ 2>&1 && echo "RESTORE_DONE"'
+      'rsync -a /r2/clawdbot/agents/ /root/.clawdbot/agents/ 2>&1; ' +
+      'rsync -a --exclude=node_modules --exclude=skills /r2/workspace/ /root/clawd/ 2>&1; ' +
+      'echo "RESTORE_DONE"'
     );
     // Wait up to 5 minutes for the restore
     let attempts = 0;
