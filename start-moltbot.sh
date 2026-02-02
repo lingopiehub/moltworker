@@ -9,7 +9,8 @@
 # Architecture: gateway runs on LOCAL disk (fast), background loop
 # pushes changes to R2 mount (persistence). No symlinks to s3fs.
 
-set -e
+# Do NOT use set -e: individual failures (e.g. R2 restore) must not kill the gateway
+# set -e  (intentionally disabled)
 
 # Check if clawdbot gateway is already running - bail early if so
 if pgrep -f "clawdbot gateway" > /dev/null 2>&1; then
@@ -98,7 +99,7 @@ fi
 # ============================================================
 # UPDATE CONFIG FROM ENVIRONMENT VARIABLES
 # ============================================================
-node << EOFNODE
+node << 'EOFNODE' || echo "WARNING: Config update script failed, continuing with defaults"
 const fs = require('fs');
 
 const configPath = '/root/.clawdbot/clawdbot.json';
