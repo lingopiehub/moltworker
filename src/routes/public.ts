@@ -104,22 +104,6 @@ publicRoutes.get('/googlechat/health', async (c) => {
     diagnostics.error = e instanceof Error ? e.message : 'unknown';
   }
 
-  // Run diagnostic commands in the container
-  try {
-    const diagCmd = 'echo "=== WHICH ===" ; which clawdbot 2>&1 ; which node 2>&1 ; node --version 2>&1 ; echo "=== CONFIG DIR ===" ; ls -la /root/.clawdbot/ 2>&1 ; echo "=== CONFIG FILE ===" ; head -5 /root/.clawdbot/clawdbot.json 2>&1 ; echo "=== R2 MOUNT ===" ; mountpoint /r2 2>&1 ; echo "=== R2 LS ===" ; ls /r2/ 2>&1 | head -10 ; echo "=== PROCESSES ===" ; ps aux 2>&1 | head -20 ; echo "=== DONE ==="';
-    const diagProc = await sandbox.startProcess(diagCmd);
-    let diagAttempts = 0;
-    while (diagProc.status === 'running' && diagAttempts < 30) {
-      await new Promise(r => setTimeout(r, 300));
-      diagAttempts++;
-    }
-    const diagLogs = await diagProc.getLogs();
-    diagnostics.containerDiag = {
-      stdout: (diagLogs.stdout || '').slice(-3000),
-      stderr: (diagLogs.stderr || '').slice(-1000),
-    };
-  } catch (e) { diagnostics.containerDiag = { error: e instanceof Error ? e.message : 'unknown' }; }
-
   // Read config to check channel settings (redact secrets)
   try {
     const proc = await sandbox.startProcess('cat /root/.clawdbot/clawdbot.json');

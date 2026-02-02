@@ -9,8 +9,7 @@
 # Architecture: gateway runs on LOCAL disk (fast), background loop
 # pushes changes to R2 mount (persistence). No symlinks to s3fs.
 
-# Do NOT use set -e: individual failures (e.g. R2 restore) must not kill the gateway
-# set -e  (intentionally disabled)
+set -e
 
 # Check if clawdbot gateway is already running - bail early if so
 if pgrep -f "clawdbot gateway" > /dev/null 2>&1; then
@@ -42,10 +41,7 @@ if mountpoint -q "$R2_DIR" 2>/dev/null; then
     if [ -d "$R2_DIR/clawdbot" ] && [ "$(ls -A $R2_DIR/clawdbot 2>/dev/null)" ]; then
         echo "Restoring config from R2..."
         mkdir -p "$CONFIG_DIR"
-        # Use timeout to prevent s3fs hangs; skip large session files on restore
-        rsync -a --timeout=60 --max-size=1M \
-            "$R2_DIR/clawdbot/" "$CONFIG_DIR/" 2>/dev/null || \
-            cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
+        cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
         echo "Config restored from R2"
     else
         echo "No config in R2 (first run)"
@@ -55,8 +51,8 @@ if mountpoint -q "$R2_DIR" 2>/dev/null; then
     if [ -d "$R2_DIR/workspace" ] && [ "$(ls -A $R2_DIR/workspace 2>/dev/null)" ]; then
         echo "Restoring workspace from R2..."
         mkdir -p "$WORKSPACE_DIR"
-        rsync -a --timeout=60 --exclude='node_modules' --max-size=1M \
-            "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
+        # Exclude node_modules - too slow to copy from s3fs, use Docker image version
+        rsync -a --exclude='node_modules' "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
             cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
         echo "Workspace restored from R2"
     else
@@ -99,7 +95,7 @@ fi
 # ============================================================
 # UPDATE CONFIG FROM ENVIRONMENT VARIABLES
 # ============================================================
-node << 'EOFNODE' || echo "WARNING: Config update script failed, continuing with defaults"
+node << EOFNODE
 const fs = require('fs');
 
 const configPath = '/root/.clawdbot/clawdbot.json';
@@ -129,8 +125,7 @@ if (config.models?.providers?.anthropic?.models) {
     }
 }
 
-// Clean up plugin config from previous deploys (causes gateway crash)
-delete config.plugins;
+
 
 // Gateway configuration
 config.gateway.port = 18789;
