@@ -9,8 +9,6 @@
 # Architecture: gateway runs on LOCAL disk (fast), background loop
 # pushes changes to R2 mount (persistence). No symlinks to s3fs.
 
-set -e
-
 # Check if clawdbot gateway is already running - bail early if so
 if pgrep -f "clawdbot gateway" > /dev/null 2>&1; then
     echo "Moltbot gateway is already running, exiting."
@@ -35,29 +33,26 @@ echo "R2 mount: $R2_DIR"
 # so the gateway runs at full speed. A background loop syncs back.
 
 if mountpoint -q "$R2_DIR" 2>/dev/null; then
-    echo "R2 is mounted at $R2_DIR, restoring to local disk..."
+    echo "R2 is mounted at $R2_DIR, restoring config to local disk..."
 
-    # --- Restore config ---
-    if [ -d "$R2_DIR/clawdbot" ] && [ "$(ls -A $R2_DIR/clawdbot 2>/dev/null)" ]; then
-        echo "Restoring config from R2..."
-        mkdir -p "$CONFIG_DIR"
-        cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
-        echo "Config restored from R2"
+    # --- Restore ONLY essential config files (not full directory) ---
+    # Full directory copy is too slow over s3fs (2000+ objects = minutes).
+    # Only copy the config JSON and service account file — everything the
+    # gateway needs to start. The background sync handles the rest.
+    mkdir -p "$CONFIG_DIR"
+    if [ -f "$R2_DIR/clawdbot/clawdbot.json" ]; then
+        cp "$R2_DIR/clawdbot/clawdbot.json" "$CONFIG_DIR/clawdbot.json" 2>/dev/null || true
+        echo "Restored clawdbot.json from R2"
     else
-        echo "No config in R2 (first run)"
+        echo "No clawdbot.json in R2 (first run)"
+    fi
+    if [ -f "$R2_DIR/clawdbot/google-chat-sa.json" ]; then
+        cp "$R2_DIR/clawdbot/google-chat-sa.json" "$CONFIG_DIR/google-chat-sa.json" 2>/dev/null || true
+        echo "Restored google-chat-sa.json from R2"
     fi
 
-    # --- Restore workspace ---
-    if [ -d "$R2_DIR/workspace" ] && [ "$(ls -A $R2_DIR/workspace 2>/dev/null)" ]; then
-        echo "Restoring workspace from R2..."
-        mkdir -p "$WORKSPACE_DIR"
-        # Exclude node_modules - too slow to copy from s3fs, use Docker image version
-        rsync -a --exclude='node_modules' "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
-            cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
-        echo "Workspace restored from R2"
-    else
-        echo "No workspace in R2 (first run)"
-    fi
+    # Skip workspace restore at startup — not needed for gateway to start.
+    # Skills are baked into the Docker image. Background sync persists changes.
 
     echo "Restore complete, gateway will run on local disk"
 else
@@ -247,10 +242,10 @@ if (isOpenAI) {
     config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
     config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
     config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5-20251101';
+    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
 } else {
     // Default to Anthropic without custom base URL (uses built-in pi-ai catalog)
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5';
+    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5';
 }
 
 // Write updated config
