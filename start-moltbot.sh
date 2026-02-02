@@ -127,6 +127,14 @@ if (config.models?.providers?.anthropic?.models) {
 
 
 
+// Plugins: load conversation-journal from the workspace plugins dir
+config.plugins = config.plugins || {};
+config.plugins.load = config.plugins.load || {};
+config.plugins.load.paths = config.plugins.load.paths || [];
+if (!config.plugins.load.paths.includes('/root/clawd/plugins/conversation-journal')) {
+    config.plugins.load.paths.push('/root/clawd/plugins/conversation-journal');
+}
+
 // Gateway configuration
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
@@ -247,10 +255,10 @@ if (isOpenAI) {
     config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
     config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
     config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5-20251101';
+    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5-20250929';
 } else {
     // Default to Anthropic without custom base URL (uses built-in pi-ai catalog)
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5';
+    config.agents.defaults.model.primary = 'anthropic/claude-sonnet-4-5';
 }
 
 // Write updated config

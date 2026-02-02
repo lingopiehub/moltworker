@@ -36,6 +36,9 @@ COPY moltbot.json.template /root/.clawdbot-templates/moltbot.json.template
 # Copy custom skills
 COPY skills/ /root/clawd/skills/
 
+# Copy plugins
+COPY plugins/ /root/clawd/plugins/
+
 # Set working directory
 WORKDIR /root/clawd
 
