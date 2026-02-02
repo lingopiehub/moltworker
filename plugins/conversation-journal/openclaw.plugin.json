@@ -1,0 +1,6 @@
+{
+  "id": "conversation-journal",
+  "name": "Conversation Journal",
+  "description": "Logs inbound and outbound conversation messages to a file for history preservation.",
+  "configSchema": { "type": "object", "properties": {} }
+}

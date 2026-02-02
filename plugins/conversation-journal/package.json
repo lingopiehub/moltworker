@@ -1,0 +1,8 @@
+{
+  "name": "conversation-journal",
+  "version": "1.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}

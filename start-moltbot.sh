@@ -33,41 +33,28 @@ echo "R2 mount: $R2_DIR"
 # so the gateway runs at full speed. A background loop syncs back.
 
 if mountpoint -q "$R2_DIR" 2>/dev/null; then
-    echo "R2 is mounted at $R2_DIR, restoring config to local disk..."
+    echo "R2 is mounted at $R2_DIR, restoring to local disk..."
 
-    # --- Restore essential config files synchronously (fast) ---
-    # These 2 files are all the gateway needs to start listening.
-    mkdir -p "$CONFIG_DIR"
-    if [ -f "$R2_DIR/clawdbot/clawdbot.json" ]; then
-        cp "$R2_DIR/clawdbot/clawdbot.json" "$CONFIG_DIR/clawdbot.json" 2>/dev/null || true
-        echo "Restored clawdbot.json from R2"
+    # --- Restore config ---
+    if [ -d "$R2_DIR/clawdbot" ] && [ "$(ls -A $R2_DIR/clawdbot 2>/dev/null)" ]; then
+        echo "Restoring config from R2..."
+        mkdir -p "$CONFIG_DIR"
+        cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
+        echo "Config restored from R2"
     else
-        echo "No clawdbot.json in R2 (first run)"
-    fi
-    if [ -f "$R2_DIR/clawdbot/google-chat-sa.json" ]; then
-        cp "$R2_DIR/clawdbot/google-chat-sa.json" "$CONFIG_DIR/google-chat-sa.json" 2>/dev/null || true
-        echo "Restored google-chat-sa.json from R2"
+        echo "No config in R2 (first run)"
     fi
 
-    # --- Restore everything else in background (slow over s3fs) ---
-    # Agents dir has conversation sessions, workspace has MEMORY.md, IDENTITY.md, etc.
-    # Runs concurrently with gateway startup so it doesn't block port readiness.
-    (
-        echo "[restore] Starting background restore..."
-        if [ -d "$R2_DIR/clawdbot/agents" ]; then
-            rsync -a "$R2_DIR/clawdbot/agents/" "$CONFIG_DIR/agents/" 2>/dev/null || \
-                cp -a "$R2_DIR/clawdbot/agents/." "$CONFIG_DIR/agents/" 2>/dev/null || true
-            echo "[restore] Agents directory restored"
-        fi
-        if [ -d "$R2_DIR/workspace" ]; then
-            rsync -a --exclude='node_modules' --exclude='skills' \
-                "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
-                cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
-            echo "[restore] Workspace restored (MEMORY.md, IDENTITY.md, etc.)"
-        fi
-        echo "[restore] Background restore complete"
-    ) &
-    echo "Started background restore (PID $!)"
+    # --- Restore workspace ---
+    if [ -d "$R2_DIR/workspace" ] && [ "$(ls -A $R2_DIR/workspace 2>/dev/null)" ]; then
+        echo "Restoring workspace from R2..."
+        mkdir -p "$WORKSPACE_DIR"
+        rsync -a --exclude='node_modules' "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
+            cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
+        echo "Workspace restored from R2"
+    else
+        echo "No workspace in R2 (first run)"
+    fi
 
     echo "Restore complete, gateway will run on local disk"
 else
@@ -136,6 +123,14 @@ if (config.models?.providers?.anthropic?.models) {
 }
 
 
+
+// Plugins: load conversation-journal from the workspace plugins dir
+config.plugins = config.plugins || {};
+config.plugins.load = config.plugins.load || {};
+config.plugins.load.paths = config.plugins.load.paths || [];
+if (!config.plugins.load.paths.includes('/root/clawd/plugins/conversation-journal')) {
+    config.plugins.load.paths.push('/root/clawd/plugins/conversation-journal');
+}
 
 // Gateway configuration
 config.gateway.port = 18789;
