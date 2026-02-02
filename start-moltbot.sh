@@ -125,7 +125,8 @@ if (config.models?.providers?.anthropic?.models) {
     }
 }
 
-
+// Clean up plugin config from previous deploys (causes gateway crash)
+delete config.plugins;
 
 // Gateway configuration
 config.gateway.port = 18789;
