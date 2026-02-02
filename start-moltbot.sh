@@ -37,26 +37,28 @@ echo "R2 mount: $R2_DIR"
 if mountpoint -q "$R2_DIR" 2>/dev/null; then
     echo "R2 is mounted at $R2_DIR, restoring to local disk..."
 
-    # --- Restore config ---
-    if [ -d "$R2_DIR/clawdbot" ] && [ "$(ls -A $R2_DIR/clawdbot 2>/dev/null)" ]; then
+    # --- Restore config (only essential files, not entire tree) ---
+    if [ -f "$R2_DIR/clawdbot/clawdbot.json" ]; then
         echo "Restoring config from R2..."
         mkdir -p "$CONFIG_DIR"
-        cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
+        cp "$R2_DIR/clawdbot/clawdbot.json" "$CONFIG_DIR/clawdbot.json" 2>/dev/null || true
+        # Restore agent directories (auth profiles, sessions)
+        if [ -d "$R2_DIR/clawdbot/agents" ]; then
+            rsync -a --timeout=30 "$R2_DIR/clawdbot/agents/" "$CONFIG_DIR/agents/" 2>/dev/null || true
+        fi
         echo "Config restored from R2"
     else
         echo "No config in R2 (first run)"
     fi
 
-    # --- Restore workspace ---
-    if [ -d "$R2_DIR/workspace" ] && [ "$(ls -A $R2_DIR/workspace 2>/dev/null)" ]; then
-        echo "Restoring workspace from R2..."
-        mkdir -p "$WORKSPACE_DIR"
-        # Exclude node_modules - too slow to copy from s3fs, use Docker image version
-        rsync -a --exclude='node_modules' "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
-            cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
-        echo "Workspace restored from R2"
+    # --- Restore workspace (only skills, skip bulk data) ---
+    if [ -d "$R2_DIR/workspace/skills" ]; then
+        echo "Restoring skills from R2..."
+        mkdir -p "$SKILLS_DIR"
+        rsync -a --timeout=30 "$R2_DIR/workspace/skills/" "$SKILLS_DIR/" 2>/dev/null || true
+        echo "Skills restored from R2"
     else
-        echo "No workspace in R2 (first run)"
+        echo "No skills in R2 (first run)"
     fi
 
     echo "Restore complete, gateway will run on local disk"
