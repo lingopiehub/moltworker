@@ -28,16 +28,13 @@ RUN mkdir -p /root/.clawdbot \
 
 # Copy startup script
 COPY start-moltbot.sh /usr/local/bin/start-moltbot.sh
-RUN chmod +x /usr/local/bin/start-moltbot.sh && echo "v2026.02.02d"
+RUN chmod +x /usr/local/bin/start-moltbot.sh && echo "v2026.02.02e"
 
 # Copy default configuration template
 COPY moltbot.json.template /root/.clawdbot-templates/moltbot.json.template
 
 # Copy custom skills
 COPY skills/ /root/clawd/skills/
-
-# Copy plugins
-COPY plugins/ /root/clawd/plugins/
 
 # Set working directory
 WORKDIR /root/clawd
