@@ -183,6 +183,29 @@ publicRoutes.get('/googlechat/debug-sync', async (c) => {
 });
 
 
+// POST /googlechat/restore-agents - Trigger agents directory restore from R2
+// Copies agent memory/sessions from R2 mount to local disk on the running container.
+publicRoutes.post('/googlechat/restore-agents', async (c) => {
+  const sandbox = c.get('sandbox');
+  try {
+    const proc = await sandbox.startProcess(
+      'rsync -a /r2/clawdbot/agents/ /root/.clawdbot/agents/ 2>&1 && echo "RESTORE_DONE"'
+    );
+    // Wait up to 5 minutes for the restore
+    let attempts = 0;
+    while (proc.status === 'running' && attempts < 150) {
+      await new Promise(r => setTimeout(r, 2000));
+      attempts++;
+    }
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout || '';
+    const success = stdout.includes('RESTORE_DONE');
+    return c.json({ success, status: proc.status, output: stdout.slice(-2000) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'unknown' }, 500);
+  }
+});
+
 // POST /googlechat - Google Chat webhook endpoint (public, no CF Access auth)
 // Google Chat sends HTTP POST requests to this webhook when messages arrive.
 // Authentication is handled by OpenClaw using the Google Chat service account credentials.
