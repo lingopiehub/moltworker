@@ -135,6 +135,17 @@ if (config.models?.providers?.anthropic?.models) {
     }
 }
 
+// Strip invalid plugin load paths (prevents startup crash if plugin files are missing)
+if (config.plugins?.load?.paths) {
+    const validPaths = config.plugins.load.paths.filter(p => {
+        const exists = fs.existsSync(p);
+        if (!exists) console.log('Removing missing plugin path:', p);
+        return exists;
+    });
+    config.plugins.load.paths = validPaths;
+    if (validPaths.length === 0) delete config.plugins.load;
+}
+
 
 
 // Gateway configuration
