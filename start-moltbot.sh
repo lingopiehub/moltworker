@@ -63,11 +63,10 @@ if mountpoint -q "$R2_DIR" 2>/dev/null; then
                 cp -a "$R2_DIR/workspace/." "$WORKSPACE_DIR/" 2>/dev/null || true
             echo "[restore] Workspace restored (MEMORY.md, IDENTITY.md, etc.)"
         fi
-        if [ -d "$R2_DIR/workspace/skills" ]; then
-            rsync -a "$R2_DIR/workspace/skills/" "$SKILLS_DIR/" 2>/dev/null || \
-                cp -a "$R2_DIR/workspace/skills/." "$SKILLS_DIR/" 2>/dev/null || true
-            echo "[restore] Skills restored"
-        fi
+        mkdir -p "$SKILLS_DIR"
+        rsync -a "$R2_DIR/workspace/skills/" "$SKILLS_DIR/" 2>/dev/null || \
+            cp -a "$R2_DIR/workspace/skills/." "$SKILLS_DIR/" 2>/dev/null || true
+        echo "[restore] Skills restored"
         echo "[restore] Background restore complete"
     ) &
     echo "Started background restore (PID $!)"
