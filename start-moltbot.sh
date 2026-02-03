@@ -54,11 +54,9 @@ if mountpoint -q "$R2_DIR" 2>/dev/null; then
     # Runs concurrently with gateway startup so it doesn't block port readiness.
     (
         echo "[restore] Starting background restore..."
-        if [ -d "$R2_DIR/clawdbot/agents" ]; then
-            rsync -a "$R2_DIR/clawdbot/agents/" "$CONFIG_DIR/agents/" 2>/dev/null || \
-                cp -a "$R2_DIR/clawdbot/agents/." "$CONFIG_DIR/agents/" 2>/dev/null || true
-            echo "[restore] Agents directory restored"
-        fi
+        rsync -a "$R2_DIR/clawdbot/" "$CONFIG_DIR/" 2>/dev/null || \
+            cp -a "$R2_DIR/clawdbot/." "$CONFIG_DIR/" 2>/dev/null || true
+        echo "[restore] Config directory restored (agents, memory, credentials, etc.)"
         if [ -d "$R2_DIR/workspace" ]; then
             rsync -a --exclude='node_modules' --exclude='skills' \
                 "$R2_DIR/workspace/" "$WORKSPACE_DIR/" 2>/dev/null || \
